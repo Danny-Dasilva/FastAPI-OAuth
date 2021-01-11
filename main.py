@@ -1,160 +1,212 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
-import jwt
-from urllib.parse import parse_qsl
-import jwt
+from typing import List, Optional
 
-from fastapi import Header, HTTPException, status
-
+from fastapi.exceptions import HTTPException
+from fastapi.openapi.models import OAuth2 as OAuth2Model
+from fastapi.openapi.models import OAuthFlows as OAuthFlowsModel
+from fastapi.param_functions import Form
+from fastapi.security.base import SecurityBase
 from fastapi.security.utils import get_authorization_scheme_param
-
-from pydantic import ValidationError
-
-
-from typing import Dict
-
-import httpx
-
-from fastapi import APIRouter, Depends
-
-from sqlalchemy.orm import Session
-
-LOGIN_URL = "https://github.com/login/oauth/authorize"
-
-TOKEN_URL = "https://github.com/login/oauth/access_token"
-
-USER_URL = "https://api.github.com/user"
-
-REDIRECT_URL = f"{settings.app_url}/auth/github"
+from starlette.requests import Request
+from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 
 
-LOGIN_URL = "https://github.com/login/oauth/authorize"
+class OAuth2PasswordRequestForm:
+    """
+    This is a dependency class, use it like:
 
-REDIRECT_URL = f"{settings.app_url}/auth/github"
-
-router = APIRouter()
-
-from pydantic import BaseModel
-
-class AuthorizationResponse(BaseModel):
-    state: str
-    code: str
-
-class GithubUser(BaseModel):
-    login: str
-    name: str
-    company: str
-    location: str
-    email: str
-    avatar_url: str
-
-class User(BaseModel):
-    id: int
-    login: str
-    name: str
-    company: str
-    location: str
-    email: str
-    picture: str
-    class Config:
-        orm_mode = True
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    user: User
+        @app.post("/login")
+        def login(form_data: OAuth2PasswordRequestForm = Depends()):
+            data = form_data.parse()
+            print(data.username)
+            print(data.password)
+            for scope in data.scopes:
+                print(scope)
+            if data.client_id:
+                print(data.client_id)
+            if data.client_secret:
+                print(data.client_secret)
+            return data
 
 
-@router.get("/login")
-def get_login_url() -> Url:
-    params = {
-        "client_id": settings.github_client_id,
-        "redirect_uri": REDIRECT_URL,
-        "state": generate_token(),
-    }
-    return Url(url=f"{LOGIN_URL}?{urlencode(params)}")
+    It creates the following Form request parameters in your endpoint:
 
-def create_access_token(*, data: User, exp: int = None) -> bytes:
-    to_encode = data.dict()
-    if exp is not None:
-        to_encode.update({"exp": exp})
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=60)
-        to_encode.update({"exp": expire})
+    grant_type: the OAuth2 spec says it is required and MUST be the fixed string "password".
+        Nevertheless, this dependency class is permissive and allows not passing it. If you want to enforce it,
+        use instead the OAuth2PasswordRequestFormStrict dependency.
+    username: username string. The OAuth2 spec requires the exact field name "username".
+    password: password string. The OAuth2 spec requires the exact field name "password".
+    scope: Optional string. Several scopes (each one a string) separated by spaces. E.g.
+        "items:read items:write users:read profile openid"
+    client_id: optional string. OAuth2 recommends sending the client_id and client_secret (if any)
+        using HTTP Basic auth, as: client_id:client_secret
+    client_secret: optional string. OAuth2 recommends sending the client_id and client_secret (if any)
+        using HTTP Basic auth, as: client_id:client_secret
+    """
 
-    encoded_jwt = jwt.encode(
-        to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
-    )
-    return encoded_jwt
-
-@router.post("/authorize")
-
-async def verify_authorization(
-
- body: AuthorizationResponse, db: Session = Depends(get_db)
-) -> Token:
-    params = {
-        "client_id": settings.github_client_id,
-        "client_secret": settings.github_client_secret,
-        "code": body.code,
-        "state": body.state,
-    }
-    async with httpx.AsyncClient() as client:
-        token_request = await client.post(TOKEN_URL, params=params)
-        response: Dict[bytes, bytes] = dict(parse_qsl(token_request.content))
-        github_token = response[b"access_token"].decode("utf-8")
-        github_header = {"Authorization": f"token {github_token}"}
-        user_request = await client.get(USER_URL, headers=github_header)
-        github_user = GithubUser(**user_request.json())
-    db_user = get_user_by_login(db, github_user.login)
-
-    if db_user is None:
-        db_user = create_user(db, github_user)
-
-    verified_user = User.from_orm(db_user)
-    access_token = create_access_token(data=verified_user)
-    return Token(access_token=access_token, token_type="bearer", user=db_user)
+    def __init__(
+        self,
+        grant_type: str = Form(None, regex="password"),
+        username: str = Form(...),
+        password: str = Form(...),
+        scope: str = Form(""),
+        client_id: Optional[str] = Form(None),
+        client_secret: Optional[str] = Form(None),
+    ):
+        self.grant_type = grant_type
+        self.username = username
+        self.password = password
+        self.scopes = scope.split()
+        self.client_id = client_id
+        self.client_secret = client_secret
 
 
+class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
+    """
+    This is a dependency class, use it like:
 
-def get_user_from_header(*, authorization: str = Header(None)) -> User:
+        @app.post("/login")
+        def login(form_data: OAuth2PasswordRequestFormStrict = Depends()):
+            data = form_data.parse()
+            print(data.username)
+            print(data.password)
+            for scope in data.scopes:
+                print(scope)
+            if data.client_id:
+                print(data.client_id)
+            if data.client_secret:
+                print(data.client_secret)
+            return data
 
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
 
-    scheme, token = get_authorization_scheme_param(authorization)
+    It creates the following Form request parameters in your endpoint:
 
-    if scheme.lower() != "bearer":
-        raise credentials_exception
-    try:
-        payload = jwt.decode(
-            token, settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm]
+    grant_type: the OAuth2 spec says it is required and MUST be the fixed string "password".
+        This dependency is strict about it. If you want to be permissive, use instead the
+        OAuth2PasswordRequestForm dependency class.
+    username: username string. The OAuth2 spec requires the exact field name "username".
+    password: password string. The OAuth2 spec requires the exact field name "password".
+    scope: Optional string. Several scopes (each one a string) separated by spaces. E.g.
+        "items:read items:write users:read profile openid"
+    client_id: optional string. OAuth2 recommends sending the client_id and client_secret (if any)
+        using HTTP Basic auth, as: client_id:client_secret
+    client_secret: optional string. OAuth2 recommends sending the client_id and client_secret (if any)
+        using HTTP Basic auth, as: client_id:client_secret
+    """
+
+    def __init__(
+        self,
+        grant_type: str = Form(..., regex="password"),
+        username: str = Form(...),
+        password: str = Form(...),
+        scope: str = Form(""),
+        client_id: Optional[str] = Form(None),
+        client_secret: Optional[str] = Form(None),
+    ):
+        super().__init__(
+            grant_type=grant_type,
+            username=username,
+            password=password,
+            scope=scope,
+            client_id=client_id,
+            client_secret=client_secret,
         )
-        try:
-            token_data = User(**payload)
-            return token_data
-        except ValidationError:
-            raise credentials_exception
-    except jwt.PyJWTError:
-        raise credentials_exception
 
-@router.get("/me", response_model=User)
 
-def read_profile(
-    user: User = Depends(get_user_from_header),
-    db: Session = Depends(get_db),
-) -> DbUser:
-    db_user = get_user(db, user.id)
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return db_user
-    
-class Url(BaseModel):
-    url: str
+class OAuth2(SecurityBase):
+    def __init__(
+        self,
+        *,
+        flows: OAuthFlowsModel = OAuthFlowsModel(),
+        scheme_name: Optional[str] = None,
+        auto_error: Optional[bool] = True
+    ):
+        self.model = OAuth2Model(flows=flows)
+        self.scheme_name = scheme_name or self.__class__.__name__
+        self.auto_error = auto_error
+
+    async def __call__(self, request: Request) -> Optional[str]:
+        authorization: str = request.headers.get("Authorization")
+        if not authorization:
+            if self.auto_error:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
+                )
+            else:
+                return None
+        return authorization
+
+
+class OAuth2PasswordBearer(OAuth2):
+    def __init__(
+        self,
+        tokenUrl: str,
+        scheme_name: Optional[str] = None,
+        scopes: Optional[dict] = None,
+        auto_error: bool = True,
+    ):
+        if not scopes:
+            scopes = {}
+        flows = OAuthFlowsModel(password={"tokenUrl": tokenUrl, "scopes": scopes})
+        super().__init__(flows=flows, scheme_name=scheme_name, auto_error=auto_error)
+
+    async def __call__(self, request: Request) -> Optional[str]:
+        authorization: str = request.headers.get("Authorization")
+        scheme, param = get_authorization_scheme_param(authorization)
+        if not authorization or scheme.lower() != "bearer":
+            if self.auto_error:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Not authenticated",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            else:
+                return None
+        return param
+
+
+class OAuth2AuthorizationCodeBearer(OAuth2):
+    def __init__(
+        self,
+        authorizationUrl: str,
+        tokenUrl: str,
+        refreshUrl: Optional[str] = None,
+        scheme_name: Optional[str] = None,
+        scopes: Optional[dict] = None,
+        auto_error: bool = True,
+    ):
+        if not scopes:
+            scopes = {}
+        flows = OAuthFlowsModel(
+            authorizationCode={
+                "authorizationUrl": authorizationUrl,
+                "tokenUrl": tokenUrl,
+                "refreshUrl": refreshUrl,
+                "scopes": scopes,
+            }
+        )
+        super().__init__(flows=flows, scheme_name=scheme_name, auto_error=auto_error)
+
+    async def __call__(self, request: Request) -> Optional[str]:
+        authorization: str = request.headers.get("Authorization")
+        scheme, param = get_authorization_scheme_param(authorization)
+        if not authorization or scheme.lower() != "bearer":
+            if self.auto_error:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Not authenticated",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            else:
+                return None  # pragma: nocover
+        return param
+
+
+class SecurityScopes:
+    def __init__(self, scopes: Optional[List[str]] = None):
+        self.scopes = scopes or []
+        self.scope_str = " ".join(self.scopes)
+
+
 
 if __name__ == '__main__':
     import uvicorn
